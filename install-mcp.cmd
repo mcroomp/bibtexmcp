@@ -19,6 +19,17 @@ if %ERRORLEVEL% neq 0 (
 set SCRIPT_DIR=%~dp0
 set SERVER=%SCRIPT_DIR%src\index.js
 
+echo Installing dependencies...
+pushd "%SCRIPT_DIR%"
+call npm install
+if %ERRORLEVEL% neq 0 (
+    echo npm install failed.
+    popd
+    exit /b 1
+)
+popd
+echo.
+
 echo Installing bibtex MCP server...
 echo   Server: %SERVER%
 echo.
