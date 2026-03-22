@@ -68,6 +68,21 @@ async function withBibWrite(filePath, fn) {
 const server = new McpServer({
   name: 'bibtex-mcp',
   version: '1.0.0',
+  instructions: `\
+Always use these tools to read or modify .bib files. Never use grep, sed, text editors, \
+or file-write tools on .bib files directly.
+
+BibTeX files use a fragile, whitespace-sensitive format where brace nesting, string \
+escaping, and field delimiters must be perfectly balanced. Manual text edits silently \
+corrupt files (unmatched braces, duplicate keys, broken encoding) in ways that are hard \
+to detect and may cause data loss. These tools parse and serialise through a dedicated \
+BibTeX library, so structural integrity is guaranteed on every write.
+
+Prefer these tools over direct file access for all .bib operations:
+- Read: query_entries, get_entry, get_field
+- Write: create_entry, update_field, delete_field, delete_entry
+- Check: validate_entry, validate_file
+- Discovery: list_entry_types`,
 });
 
 // ---------------------------------------------------------------------------
