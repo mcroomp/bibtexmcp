@@ -266,6 +266,43 @@ describe('getEntryTypeSchema', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// UNIVERSAL_OPTIONAL fields accepted on all entry types
+// ---------------------------------------------------------------------------
+
+describe('validateEntry – universal optional fields', () => {
+  const universalFields = ['annote', 'crossref', 'abstract', 'keywords'];
+
+  for (const field of universalFields) {
+    it(`does not warn about "${field}" on @article`, () => {
+      const e = makeEntry('article', 'x', {
+        author: 'A', title: 'T', journal: 'J', year: '2023',
+        [field]: 'some value',
+      });
+      const issues = validateEntry(e);
+      assert.ok(!issues.some(i => i.field === field && i.message.includes('not standard')),
+        `"${field}" should be accepted on @article`);
+    });
+
+    it(`does not warn about "${field}" on @book`, () => {
+      const e = makeEntry('book', 'x', {
+        author: 'A', title: 'T', publisher: 'P', year: '2023',
+        [field]: 'some value',
+      });
+      const issues = validateEntry(e);
+      assert.ok(!issues.some(i => i.field === field && i.message.includes('not standard')),
+        `"${field}" should be accepted on @book`);
+    });
+
+    it(`does not warn about "${field}" on @misc`, () => {
+      const e = makeEntry('misc', 'x', { [field]: 'value' });
+      const issues = validateEntry(e);
+      assert.ok(!issues.some(i => i.field === field && i.message.includes('not standard')),
+        `"${field}" should be accepted on @misc`);
+    });
+  }
+});
+
 describe('listEntryTypes', () => {
   it('returns an array of known type strings', () => {
     const types = listEntryTypes();

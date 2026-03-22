@@ -24,6 +24,9 @@ An MCP (Model Context Protocol) server that exposes BibTeX file manipulation as 
 | `delete_entry` | Delete an entry |
 | `validate_entry` | Validate a single entry |
 | `validate_file` | Validate all entries in a file |
+| `validate_doi` | Cross-check entry fields against Crossref DOI metadata |
+| `validate_doi_batch` | Cross-check all DOI-bearing entries in a file against Crossref |
+| `convert_entry_type` | Change an entry's type, optionally renaming fields |
 | `list_entry_types` | List standard BibTeX types with required/optional fields |
 
 ## Commands

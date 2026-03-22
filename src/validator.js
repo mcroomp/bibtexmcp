@@ -7,62 +7,69 @@
  * Returns issues as { severity: 'error'|'warning', field: string|null, message: string }.
  */
 
+// Fields that are valid on every entry type (BibTeX standard + near-universal practice).
+// annote    — annotation text, rendered by annotated bibliography styles
+// crossref  — cite key of a parent entry; BibTeX inherits missing fields from it
+// abstract  — abstract text; ignored by standard styles but widely used by tools
+// keywords  — comma-separated keyword list; ignored by standard styles but widely used
+const UNIVERSAL_OPTIONAL = ['annote', 'crossref', 'abstract', 'keywords'];
+
 const ENTRY_TYPES = {
   article: {
     required: ['author', 'title', 'journal', 'year'],
-    optional: ['volume', 'number', 'pages', 'month', 'doi', 'url', 'note', 'issn', 'abstract', 'keywords'],
+    optional: ['volume', 'number', 'pages', 'month', 'doi', 'url', 'note', 'issn', ...UNIVERSAL_OPTIONAL],
   },
   book: {
     required: [['author', 'editor'], 'title', 'publisher', 'year'],
-    optional: ['volume', 'number', 'series', 'address', 'edition', 'month', 'note', 'isbn', 'doi', 'url'],
+    optional: ['volume', 'number', 'series', 'address', 'edition', 'month', 'note', 'isbn', 'doi', 'url', ...UNIVERSAL_OPTIONAL],
   },
   booklet: {
     required: ['title'],
-    optional: ['author', 'howpublished', 'address', 'month', 'year', 'note'],
+    optional: ['author', 'howpublished', 'address', 'month', 'year', 'note', ...UNIVERSAL_OPTIONAL],
   },
   conference: {
     required: ['author', 'title', 'booktitle', 'year'],
-    optional: ['editor', 'volume', 'number', 'series', 'pages', 'address', 'month', 'organization', 'publisher', 'note', 'doi', 'url'],
+    optional: ['editor', 'volume', 'number', 'series', 'pages', 'address', 'month', 'organization', 'publisher', 'note', 'doi', 'url', ...UNIVERSAL_OPTIONAL],
   },
   inbook: {
     required: [['author', 'editor'], 'title', ['chapter', 'pages'], 'publisher', 'year'],
-    optional: ['volume', 'number', 'series', 'type', 'address', 'edition', 'month', 'note'],
+    optional: ['volume', 'number', 'series', 'type', 'address', 'edition', 'month', 'note', ...UNIVERSAL_OPTIONAL],
   },
   incollection: {
     required: ['author', 'title', 'booktitle', 'publisher', 'year'],
-    optional: ['editor', 'volume', 'number', 'series', 'type', 'chapter', 'pages', 'address', 'edition', 'month', 'note', 'doi', 'url'],
+    optional: ['editor', 'volume', 'number', 'series', 'type', 'chapter', 'pages', 'address', 'edition', 'month', 'note', 'doi', 'url', ...UNIVERSAL_OPTIONAL],
   },
   inproceedings: {
     required: ['author', 'title', 'booktitle', 'year'],
-    optional: ['editor', 'volume', 'number', 'series', 'pages', 'address', 'month', 'organization', 'publisher', 'note', 'doi', 'url'],
+    optional: ['editor', 'volume', 'number', 'series', 'pages', 'address', 'month', 'organization', 'publisher', 'note', 'doi', 'url', ...UNIVERSAL_OPTIONAL],
   },
   manual: {
     required: ['title'],
-    optional: ['author', 'organization', 'address', 'edition', 'month', 'year', 'note'],
+    optional: ['author', 'organization', 'address', 'edition', 'month', 'year', 'note', ...UNIVERSAL_OPTIONAL],
   },
   mastersthesis: {
     required: ['author', 'title', 'school', 'year'],
-    optional: ['type', 'address', 'month', 'note', 'url'],
+    optional: ['type', 'address', 'month', 'note', 'url', ...UNIVERSAL_OPTIONAL],
   },
   misc: {
     required: [],
-    optional: ['author', 'title', 'howpublished', 'month', 'year', 'note', 'url', 'doi'],
+    optional: ['author', 'title', 'howpublished', 'month', 'year', 'note', 'url', 'doi', ...UNIVERSAL_OPTIONAL],
   },
   phdthesis: {
     required: ['author', 'title', 'school', 'year'],
-    optional: ['type', 'address', 'month', 'note', 'url'],
+    optional: ['type', 'address', 'month', 'note', 'url', ...UNIVERSAL_OPTIONAL],
   },
   proceedings: {
     required: ['title', 'year'],
-    optional: ['editor', 'volume', 'number', 'series', 'address', 'month', 'publisher', 'organization', 'note'],
+    optional: ['editor', 'volume', 'number', 'series', 'address', 'month', 'publisher', 'organization', 'note', ...UNIVERSAL_OPTIONAL],
   },
   techreport: {
     required: ['author', 'title', 'institution', 'year'],
-    optional: ['type', 'number', 'address', 'month', 'note', 'url', 'doi'],
+    optional: ['type', 'number', 'address', 'month', 'note', 'url', 'doi', ...UNIVERSAL_OPTIONAL],
   },
   unpublished: {
     required: ['author', 'title', 'note'],
-    optional: ['month', 'year', 'url'],
+    optional: ['month', 'year', 'url', ...UNIVERSAL_OPTIONAL],
   },
 };
 

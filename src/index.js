@@ -11,6 +11,9 @@
  *  - delete_entry      Delete an entry entirely
  *  - validate_entry    Validate a single entry
  *  - validate_file     Validate all entries in a file
+ *  - validate_doi      Cross-check entry fields against Crossref DOI metadata
+ *  - validate_doi_batch Cross-check all DOI-bearing entries in a file against Crossref
+ *  - convert_entry_type Change an entry's type, optionally renaming fields to match
  *  - list_entry_types  List valid BibTeX entry types with required/optional fields
  */
 
@@ -24,6 +27,7 @@ import {
   replaceEntry, deleteEntry, addEntry,
 } from './bibtex.js';
 import { validateEntry, validateAll, getEntryTypeSchema, listEntryTypes } from './validator.js';
+import { fetchDoiMetadata, compareEntryWithDoi } from './doi.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -319,6 +323,156 @@ server.tool(
         results,
         parseErrors: parseErrors.length ? parseErrors : undefined,
       });
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// validate_doi
+// ---------------------------------------------------------------------------
+server.tool(
+  'validate_doi',
+  'Check that a BibTeX entry\'s fields (title, year, author, journal, etc.) match the metadata returned by a Crossref DOI lookup. The entry must have a doi field.',
+  {
+    file: z.string().describe('Absolute path to the .bib file'),
+    key:  z.string().describe('Citation key of the entry to validate against its DOI'),
+  },
+  async ({ file, key }) => {
+    return withBib(file, async (lib, parseErrors) => {
+      const entry = findEntry(lib.entries, key);
+      if (!entry) return err(`Entry with key "${key}" not found`);
+
+      const doi = entry.fields.doi?.trim();
+      if (!doi) return err(`Entry "${key}" does not have a doi field`);
+
+      let cr;
+      try {
+        cr = await fetchDoiMetadata(doi);
+      } catch (e) {
+        return err(`DOI lookup failed: ${e.message}`);
+      }
+
+      const mismatches = compareEntryWithDoi(entry, cr);
+      return ok({
+        key,
+        doi,
+        valid: mismatches.length === 0,
+        mismatches,
+        parseErrors: parseErrors.length ? parseErrors : undefined,
+      });
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// validate_doi_batch
+// ---------------------------------------------------------------------------
+server.tool(
+  'validate_doi_batch',
+  'Check every entry in a .bib file that has a doi field against Crossref metadata. '
+  + 'Fetches DOIs sequentially to stay within Crossref rate limits. '
+  + 'Returns per-entry results plus a summary.',
+  {
+    file: z.string().describe('Absolute path to the .bib file'),
+  },
+  async ({ file }) => {
+    return withBib(file, async (lib, parseErrors) => {
+      const withDoi = lib.entries.filter(e => e.fields.doi?.trim());
+
+      const results = [];
+      let valid = 0;
+      let withMismatches = 0;
+      let lookupErrors = 0;
+
+      for (const entry of withDoi) {
+        const doi = entry.fields.doi.trim();
+        let cr;
+        try {
+          cr = await fetchDoiMetadata(doi);
+        } catch (e) {
+          results.push({ key: entry.key, doi, error: e.message });
+          lookupErrors++;
+          continue;
+        }
+        const mismatches = compareEntryWithDoi(entry, cr);
+        if (mismatches.length === 0) {
+          valid++;
+        } else {
+          withMismatches++;
+        }
+        results.push({ key: entry.key, doi, valid: mismatches.length === 0, mismatches });
+      }
+
+      return ok({
+        summary: {
+          checked: withDoi.length,
+          valid,
+          withMismatches,
+          lookupErrors,
+        },
+        results,
+        parseErrors: parseErrors.length ? parseErrors : undefined,
+      });
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// convert_entry_type
+// ---------------------------------------------------------------------------
+server.tool(
+  'convert_entry_type',
+  'Change a BibTeX entry from one type to another (e.g. article → inproceedings). '
+  + 'Optionally rename fields at the same time (e.g. rename journal to booktitle). '
+  + 'Returns the updated entry and any validation issues introduced by the type change.',
+  {
+    file:         z.string().describe('Absolute path to the .bib file'),
+    key:          z.string().describe('Citation key of the entry to convert'),
+    newType:      z.string().describe('Target entry type, e.g. "inproceedings", "article"'),
+    fieldRenames: z.record(z.string()).optional().describe(
+      'Optional field renames to apply during conversion, e.g. {"journal": "booktitle"}. '
+      + 'Keys are old field names, values are new names.'
+    ),
+  },
+  async ({ file, key, newType, fieldRenames }) => {
+    return withBibWrite(file, (lib) => {
+      const entry = findEntry(lib.entries, key);
+      if (!entry) return { error: `Entry with key "${key}" not found` };
+
+      const targetType = newType.toLowerCase();
+      if (!getEntryTypeSchema(targetType)) {
+        return { error: `Unknown entry type "@${targetType}"` };
+      }
+
+      // Apply field renames
+      let fields = { ...entry.fields };
+      const appliedRenames = [];
+      if (fieldRenames) {
+        for (const [oldName, newName] of Object.entries(fieldRenames)) {
+          const ol = oldName.toLowerCase();
+          const nl = newName.toLowerCase();
+          if (ol in fields) {
+            fields[nl] = fields[ol];
+            delete fields[ol];
+            appliedRenames.push({ from: ol, to: nl });
+          }
+        }
+      }
+
+      const converted = { ...entry, type: targetType, fields };
+      const validationIssues = validateEntry(converted);
+
+      const entries = replaceEntry(lib.entries, key, converted);
+      return {
+        entries,
+        data: {
+          key,
+          oldType: entry.type,
+          newType: targetType,
+          appliedRenames,
+          validationIssues,
+        },
+      };
     });
   }
 );

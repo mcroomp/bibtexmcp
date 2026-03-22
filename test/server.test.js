@@ -87,7 +87,9 @@ describe('tools/list', () => {
     const expected = [
       'query_entries', 'get_entry', 'get_field',
       'create_entry', 'update_field', 'delete_field', 'delete_entry',
-      'validate_entry', 'validate_file', 'list_entry_types',
+      'validate_entry', 'validate_file',
+      'validate_doi', 'validate_doi_batch',
+      'convert_entry_type', 'list_entry_types',
     ];
     for (const name of expected) {
       assert.ok(names.includes(name), `Tool "${name}" should be listed`);
@@ -357,6 +359,123 @@ describe('validate_file', () => {
     const badEntry = data.results.find(r => r.key === 'conf2022bad');
     assert.ok(badEntry, 'conf2022bad should appear in results');
     assert.ok(badEntry.issues.some(i => i.severity === 'error'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// convert_entry_type
+// ---------------------------------------------------------------------------
+
+describe('convert_entry_type', () => {
+  it('converts an article to inproceedings', async () => {
+    // create a fresh entry to convert
+    await callTool('create_entry', {
+      file: bibPath, key: 'toconvert2024', type: 'article',
+      fields: { author: 'A', title: 'T', journal: 'J', year: '2024' },
+    });
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'toconvert2024', newType: 'inproceedings',
+    });
+    assert.equal(data.oldType, 'article');
+    assert.equal(data.newType, 'inproceedings');
+
+    const fetched = await callTool('get_entry', { file: bibPath, key: 'toconvert2024' });
+    assert.equal(fetched.entry.type, 'inproceedings');
+  });
+
+  it('renames fields during conversion', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'rename2024', type: 'article',
+      fields: { author: 'A', title: 'T', journal: 'Proc. of Conf', year: '2024' },
+    });
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'rename2024', newType: 'inproceedings',
+      fieldRenames: { journal: 'booktitle' },
+    });
+    assert.ok(data.appliedRenames.some(r => r.from === 'journal' && r.to === 'booktitle'));
+
+    const journal = await callTool('get_field', { file: bibPath, key: 'rename2024', field: 'journal' });
+    assert.ok(journal.error, 'journal field should be gone');
+
+    const booktitle = await callTool('get_field', { file: bibPath, key: 'rename2024', field: 'booktitle' });
+    assert.equal(booktitle.value, 'Proc. of Conf');
+  });
+
+  it('returns validation issues introduced by the type change', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'convertbad2024', type: 'misc',
+      fields: { title: 'Only a title' },
+    });
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'convertbad2024', newType: 'article',
+    });
+    // article requires author, journal, year — all missing
+    assert.ok(Array.isArray(data.validationIssues));
+    assert.ok(data.validationIssues.some(i => i.severity === 'error'));
+  });
+
+  it('returns an error for a missing entry key', async () => {
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'nosuchkey', newType: 'article',
+    });
+    assert.ok(data.error);
+  });
+
+  it('returns an error for an unknown target type', async () => {
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'smith2023', newType: 'badtype',
+    });
+    assert.ok(data.error);
+  });
+
+  it('ignores renames for fields that do not exist', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'renamemissing', type: 'misc', fields: { title: 'T' },
+    });
+    const data = await callTool('convert_entry_type', {
+      file: bibPath, key: 'renamemissing', newType: 'misc',
+      fieldRenames: { nonexistent: 'something' },
+    });
+    assert.deepEqual(data.appliedRenames, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validate_doi — error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('validate_doi – error paths', () => {
+  it('returns an error when the entry key does not exist', async () => {
+    const data = await callTool('validate_doi', { file: bibPath, key: 'nosuchkey' });
+    assert.ok(data.error);
+    assert.match(data.error, /not found/i);
+  });
+
+  it('returns an error when the entry has no doi field', async () => {
+    // smith2023 has no doi field in the original fixture
+    const data = await callTool('validate_doi', { file: bibPath, key: 'jones2020' });
+    assert.ok(data.error);
+    assert.match(data.error, /doi/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validate_doi_batch — error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('validate_doi_batch – no doi entries', () => {
+  it('returns a summary with zero checked when no entries have doi fields', async () => {
+    // Write a temp bib with no doi fields
+    const nodoi = join(tmpdir(), `mcp-nodoi-${Date.now()}.bib`);
+    const { writeFile: wf, unlink: ul } = await import('node:fs/promises');
+    await wf(nodoi, '@misc{a, title = {No DOI here}}\n', 'utf8');
+    try {
+      const data = await callTool('validate_doi_batch', { file: nodoi });
+      assert.equal(data.summary.checked, 0);
+      assert.deepEqual(data.results, []);
+    } finally {
+      await ul(nodoi).catch(() => {});
+    }
   });
 });
 
