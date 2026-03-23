@@ -71,6 +71,13 @@ const ENTRY_TYPES = {
     required: ['author', 'title', 'note'],
     optional: ['month', 'year', 'url', ...UNIVERSAL_OPTIONAL],
   },
+  patent: {
+    // Not in original BibTeX but widely used; follows biblatex @patent conventions.
+    // `number` is the patent number (e.g. "US 9,876,543 B2").
+    // `holder` is the assignee / rights holder.
+    required: ['author', 'title', 'number', 'year'],
+    optional: ['holder', 'type', 'nationality', 'address', 'month', 'day', 'note', 'url', 'doi', ...UNIVERSAL_OPTIONAL],
+  },
 };
 
 const FIELD_VALIDATORS = {

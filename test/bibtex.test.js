@@ -325,4 +325,69 @@ describe('loadBib / saveBib', () => {
   it('throws for a non-existent file', async () => {
     await assert.rejects(() => loadBib('/no/such/file.bib'));
   });
+
+  it('loadBib exposes mtime', async () => {
+    const tmp = join(tmpdir(), `test-mtime-${Date.now()}.bib`);
+    try {
+      await saveBib(tmp, [], {});
+      const lib = await loadBib(tmp);
+      assert.ok(typeof lib.mtime === 'number', 'mtime should be a number');
+      assert.ok(lib.mtime > 0, 'mtime should be positive');
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('saveBib succeeds when expectedMtime matches', async () => {
+    const tmp = join(tmpdir(), `test-mtime-ok-${Date.now()}.bib`);
+    try {
+      await saveBib(tmp, [], {});
+      const lib = await loadBib(tmp);
+      // Should not throw — mtime is still current
+      await assert.doesNotReject(() => saveBib(tmp, lib.entries, {}, lib.mtime));
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('saveBib rejects when expectedMtime is stale', async () => {
+    const tmp = join(tmpdir(), `test-mtime-stale-${Date.now()}.bib`);
+    try {
+      await saveBib(tmp, [], {});
+      const lib = await loadBib(tmp);
+      // Simulate a concurrent write by overwriting the file before we save
+      await writeFile(tmp, '% modified\n', 'utf8');
+      await assert.rejects(
+        () => saveBib(tmp, lib.entries, {}, lib.mtime),
+        /modified by another process/
+      );
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('saveBib writes atomically — no partial file visible on rename', async () => {
+    const tmp = join(tmpdir(), `test-atomic-${Date.now()}.bib`);
+    try {
+      const lib1 = parseBib(ARTICLE);
+      await saveBib(tmp, lib1.entries, {});
+      const lib2 = await loadBib(tmp);
+      // File should be fully parseable after write
+      assert.ok(lib2.entries.length > 0);
+      assert.ok(lib2.mtime > 0);
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('saveBib skips mtime check when expectedMtime is null', async () => {
+    const tmp = join(tmpdir(), `test-mtime-null-${Date.now()}.bib`);
+    try {
+      await saveBib(tmp, [], {}, null);   // new-file path — no check
+      const stat = await import('fs/promises').then(m => m.stat(tmp));
+      assert.ok(stat.size >= 0);
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
 });

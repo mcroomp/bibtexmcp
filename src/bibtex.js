@@ -8,7 +8,7 @@
  *   { type: string, key: string, fields: Record<string, string> }
  */
 
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, rename, unlink, stat } from 'fs/promises';
 import { parse } from '@retorquere/bibtex-parser';
 
 const VERBATIM_ALL = { verbatimFields: [new RegExp('.*')] };
@@ -26,10 +26,20 @@ export function parseBib(src) {
   return parse(src, VERBATIM_ALL);
 }
 
-/** Read and parse a .bib file. */
+/**
+ * Read and parse a .bib file.
+ * Returns the parsed result plus a `mtime` field (ms since epoch) captured
+ * before the read, so it can be passed back to saveBib as a concurrency guard.
+ */
 export async function loadBib(filePath) {
+  // Stat before read: if a concurrent writer modifies the file between our
+  // stat and our read we'll have an older mtime than the current file, which
+  // causes saveBib to reject our stale view — the safe direction to err.
+  const { mtimeMs } = await stat(filePath);
   const src = await readFile(filePath, 'utf8');
-  return parseBib(src);
+  const result = parseBib(src);
+  result.mtime = mtimeMs;
+  return result;
 }
 
 /**
@@ -54,9 +64,38 @@ export function serializeBib(entries, strings = {}) {
   return parts.join('\n\n') + '\n';
 }
 
-/** Write entries back to a .bib file (replaces file contents). */
-export async function saveBib(filePath, entries, strings = {}) {
-  await writeFile(filePath, serializeBib(entries, strings), 'utf8');
+/**
+ * Write entries back to a .bib file.
+ *
+ * Uses an atomic write: content is written to a sibling `.tmp` file first,
+ * then renamed over the target in a single filesystem operation so readers
+ * never see a partially-written file.
+ *
+ * If `expectedMtime` is provided (the value returned by loadBib), the file's
+ * current mtime is checked before the write.  A mismatch means another process
+ * modified the file after we read it; the write is aborted with an error.
+ * Pass `null` (or omit) to skip the check, e.g. when creating a new file.
+ */
+export async function saveBib(filePath, entries, strings = {}, expectedMtime = null) {
+  if (expectedMtime !== null) {
+    const { mtimeMs } = await stat(filePath);
+    if (mtimeMs !== expectedMtime) {
+      throw new Error(
+        `"${filePath}" was modified by another process while this operation was in progress — ` +
+        `aborting to avoid overwriting changes. Re-read the file and retry.`
+      );
+    }
+  }
+
+  const content = serializeBib(entries, strings);
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmpPath, content, 'utf8');
+    await rename(tmpPath, filePath);
+  } catch (e) {
+    try { await unlink(tmpPath); } catch { /* ignore cleanup failure */ }
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------

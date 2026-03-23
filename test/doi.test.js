@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { compareEntryWithDoi } from '../src/doi.js';
+import { compareEntryWithDoi, crossrefToBibFields, lookupDoiByMetadata } from '../src/doi.js';
 
 function makeEntry(fields = {}) {
   return { type: 'article', key: 'test2023', fields };
@@ -200,5 +200,180 @@ describe('compareEntryWithDoi – edge cases', () => {
     const entry = makeEntry({ pages: '123–456' });
     const issues = compareEntryWithDoi(entry, makeCr({ page: '123-456' }));
     assert.equal(issues.filter(i => i.field === 'pages').length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mismatch severity
+// ---------------------------------------------------------------------------
+
+describe('compareEntryWithDoi – mismatch severity', () => {
+  it('marks a wrong year as substantive', () => {
+    const entry = makeEntry({ year: '2020' });
+    const issues = compareEntryWithDoi(entry, makeCr());
+    const issue = issues.find(i => i.field === 'year');
+    assert.equal(issue.severity, 'substantive');
+  });
+
+  it('marks wrong pages as substantive', () => {
+    const entry = makeEntry({ pages: '1--10' });
+    const issues = compareEntryWithDoi(entry, makeCr());
+    const issue = issues.find(i => i.field === 'pages');
+    assert.equal(issue.severity, 'substantive');
+  });
+
+  it('marks a wrong author list as substantive', () => {
+    const entry = makeEntry({ author: 'Brown, Bob and Green, Carol' });
+    const issues = compareEntryWithDoi(entry, makeCr());
+    const issue = issues.find(i => i.field === 'author');
+    assert.equal(issue.severity, 'substantive');
+  });
+
+  it('marks a journal abbreviation as cosmetic (local is prefix of remote)', () => {
+    const entry = makeEntry({ journal: 'Human Factors' });
+    const cr = makeCr({ 'container-title': ['Human Factors: The Journal of the Human Factors and Ergonomics Society'] });
+    const issues = compareEntryWithDoi(entry, cr);
+    const issue = issues.find(i => i.field === 'journal');
+    assert.ok(issue, 'should report a mismatch');
+    assert.equal(issue.severity, 'cosmetic');
+  });
+
+  it('marks a publisher abbreviation as cosmetic (local is prefix of remote)', () => {
+    const entry = makeEntry({ publisher: 'Elsevier' });
+    const cr = makeCr({ publisher: 'Elsevier BV' });
+    const issues = compareEntryWithDoi(entry, cr);
+    const issue = issues.find(i => i.field === 'publisher');
+    assert.ok(issue, 'should report a mismatch');
+    assert.equal(issue.severity, 'cosmetic');
+  });
+
+  it('marks Crossref-truncated title as cosmetic (remote is prefix of local)', () => {
+    const entry = makeEntry({ title: 'To Trust or to Think: Cognitive Forcing Functions Can Reduce Overreliance' });
+    const cr = makeCr({ title: ['To Trust or to Think'] });
+    const issues = compareEntryWithDoi(entry, cr);
+    const issue = issues.find(i => i.field === 'title');
+    assert.ok(issue, 'should report a mismatch');
+    assert.equal(issue.severity, 'cosmetic');
+  });
+
+  it('marks a completely wrong journal name as substantive', () => {
+    const entry = makeEntry({ journal: 'Completely Different Journal' });
+    const issues = compareEntryWithDoi(entry, makeCr());
+    const issue = issues.find(i => i.field === 'journal');
+    assert.equal(issue.severity, 'substantive');
+  });
+
+  it('every mismatch has a severity field', () => {
+    const entry = makeEntry({
+      title: 'Wrong', year: '2000', author: 'Nobody', journal: 'Wrong', publisher: 'Wrong',
+    });
+    const issues = compareEntryWithDoi(entry, makeCr());
+    for (const issue of issues) {
+      assert.ok(
+        issue.severity === 'cosmetic' || issue.severity === 'substantive',
+        `Expected cosmetic or substantive, got "${issue.severity}" for field "${issue.field}"`
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unicode / LaTeX encoding normalisation
+// ---------------------------------------------------------------------------
+
+describe('compareEntryWithDoi – unicode and LaTeX encoding', () => {
+  it('treats LaTeX \\"{u} and unicode ü as equal in author names', () => {
+    const entry = makeEntry({ author: 'Gr{\\"u}tzner, Cassandra' });
+    const cr = makeCr({ author: [{ family: 'Grützner', given: 'Cassandra' }] });
+    const issues = compareEntryWithDoi(entry, cr);
+    assert.equal(issues.filter(i => i.field === 'author').length, 0);
+  });
+
+  it('treats LaTeX \\c{c} and unicode ç as equal in author names', () => {
+    const entry = makeEntry({ author: 'Bu\\c{c}inca, Zana' });
+    const cr = makeCr({ author: [{ family: 'Buçinca', given: 'Zana' }] });
+    const issues = compareEntryWithDoi(entry, cr);
+    assert.equal(issues.filter(i => i.field === 'author').length, 0);
+  });
+
+  it("treats LaTeX \\'{e} and unicode é as equal in author names", () => {
+    const entry = makeEntry({ author: "Letouz\\'{e}, Emmanuel" });
+    const cr = makeCr({ author: [{ family: 'Letouzé', given: 'Emmanuel' }] });
+    const issues = compareEntryWithDoi(entry, cr);
+    assert.equal(issues.filter(i => i.field === 'author').length, 0);
+  });
+
+  it('still flags genuinely different author family names after unicode normalisation', () => {
+    const entry = makeEntry({ author: 'Mueller, Hans' });
+    const cr = makeCr({ author: [{ family: 'Schneider', given: 'Hans' }] });
+    const issues = compareEntryWithDoi(entry, cr);
+    assert.ok(issues.some(i => i.field === 'author'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// crossrefToBibFields
+// ---------------------------------------------------------------------------
+
+describe('crossrefToBibFields', () => {
+  const cr = {
+    title:            ['A Great Paper: Full Subtitle'],
+    published:        { 'date-parts': [[2023]] },
+    author:           [{ family: 'Smith', given: 'John' }, { family: 'Jones', given: 'Alice' }],
+    'container-title': ['Journal of Things'],
+    volume:           '10',
+    issue:            '2',
+    page:             '123-456',
+    publisher:        'Some Publisher',
+  };
+
+  it('maps title', () => {
+    const f = crossrefToBibFields(cr, { title: '' });
+    assert.equal(f.title, 'A Great Paper: Full Subtitle');
+  });
+
+  it('maps year', () => {
+    const f = crossrefToBibFields(cr, { year: '' });
+    assert.equal(f.year, '2023');
+  });
+
+  it('maps authors in Family, Given and ... format', () => {
+    const f = crossrefToBibFields(cr, { author: '' });
+    assert.equal(f.author, 'Smith, John and Jones, Alice');
+  });
+
+  it('maps container-title to journal when journal exists in entry', () => {
+    const f = crossrefToBibFields(cr, { journal: '' });
+    assert.equal(f.journal, 'Journal of Things');
+    assert.equal(f.booktitle, undefined);
+  });
+
+  it('maps container-title to booktitle when booktitle exists in entry', () => {
+    const f = crossrefToBibFields(cr, { booktitle: '' });
+    assert.equal(f.booktitle, 'Journal of Things');
+    assert.equal(f.journal, undefined);
+  });
+
+  it('normalises page dash to double-dash', () => {
+    const f = crossrefToBibFields(cr, { pages: '' });
+    assert.equal(f.pages, '123--456');
+  });
+
+  it('does not emit fields absent from the Crossref message', () => {
+    const f = crossrefToBibFields({}, {});
+    assert.deepEqual(f, {});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lookupDoiByMetadata — error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('lookupDoiByMetadata – error path', () => {
+  it('throws when neither title nor author is provided', async () => {
+    await assert.rejects(
+      () => lookupDoiByMetadata({}),
+      /at least one of title or author/i
+    );
   });
 });

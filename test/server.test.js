@@ -86,10 +86,16 @@ describe('tools/list', () => {
     const names = result.tools.map(t => t.name);
     const expected = [
       'query_entries', 'get_entry', 'get_field',
-      'create_entry', 'update_field', 'delete_field', 'delete_entry',
+      'create_entry', 'update_field', 'update_fields', 'delete_field', 'delete_entry',
+      'replace_entry',
       'validate_entry', 'validate_file',
       'validate_doi', 'validate_doi_batch',
+      'lookup_doi_by_metadata', 'fix_from_doi',
+      'validate_patent',
       'convert_entry_type', 'list_entry_types',
+      'fill_missing_dois',
+      'rename_key',
+      'create_bib',
     ];
     for (const name of expected) {
       assert.ok(names.includes(name), `Tool "${name}" should be listed`);
@@ -101,6 +107,47 @@ describe('tools/list', () => {
     for (const tool of result.tools) {
       assert.ok(tool.description, `"${tool.name}" should have a description`);
       assert.ok(tool.inputSchema, `"${tool.name}" should have an inputSchema`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// create_bib
+// ---------------------------------------------------------------------------
+
+describe('create_bib', () => {
+  it('creates a new empty .bib file', async () => {
+    const newBib = join(tmpdir(), `create-bib-test-${Date.now()}.bib`);
+    try {
+      const data = await callTool('create_bib', { file: newBib });
+      assert.equal(data.created, true);
+      assert.equal(data.file, newBib);
+      const content = await readFile(newBib, 'utf8');
+      assert.ok(typeof content === 'string', 'file should exist and be readable');
+    } finally {
+      await unlink(newBib).catch(() => {});
+    }
+  });
+
+  it('returns an error if the file already exists', async () => {
+    const data = await callTool('create_bib', { file: bibPath });
+    assert.ok(data.error);
+  });
+
+  it('overwrites an existing file when overwrite: true', async () => {
+    const newBib = join(tmpdir(), `create-bib-overwrite-${Date.now()}.bib`);
+    try {
+      await callTool('create_bib', { file: newBib });
+      await callTool('create_entry', { file: newBib, key: 'temp2024', type: 'misc', fields: {} });
+
+      const data = await callTool('create_bib', { file: newBib, overwrite: true });
+      assert.equal(data.created, true);
+
+      // File should now be empty — the entry added above is gone
+      const result = await callTool('query_entries', { file: newBib });
+      assert.equal(result.total, 0);
+    } finally {
+      await unlink(newBib).catch(() => {});
     }
   });
 });
@@ -313,6 +360,49 @@ describe('delete_entry', () => {
 });
 
 // ---------------------------------------------------------------------------
+// rename_key
+// ---------------------------------------------------------------------------
+
+describe('rename_key', () => {
+  it('renames a key and the entry is accessible under the new key', async () => {
+    await callTool('create_entry', { file: bibPath, key: 'oldkey2024', type: 'misc', fields: { title: 'Test' } });
+
+    const data = await callTool('rename_key', { file: bibPath, oldKey: 'oldkey2024', newKey: 'newkey2024' });
+    assert.equal(data.oldKey, 'oldkey2024');
+    assert.equal(data.newKey, 'newkey2024');
+
+    const found = await callTool('get_entry', { file: bibPath, key: 'newkey2024' });
+    assert.equal(found.entry.key, 'newkey2024');
+    assert.equal(found.entry.fields.title, 'Test');
+
+    const gone = await callTool('get_entry', { file: bibPath, key: 'oldkey2024' });
+    assert.ok(gone.error, 'old key should no longer exist');
+  });
+
+  it('preserves the entry type and all fields', async () => {
+    await callTool('create_entry', { file: bibPath, key: 'preserve2024', type: 'article',
+      fields: { title: 'Keep Me', author: 'Smith, A', year: '2024', journal: 'J' } });
+
+    await callTool('rename_key', { file: bibPath, oldKey: 'preserve2024', newKey: 'preserved2024' });
+
+    const found = await callTool('get_entry', { file: bibPath, key: 'preserved2024' });
+    assert.equal(found.entry.type, 'article');
+    assert.equal(found.entry.fields.title, 'Keep Me');
+    assert.equal(found.entry.fields.author, 'Smith, A');
+  });
+
+  it('returns an error for a missing old key', async () => {
+    const data = await callTool('rename_key', { file: bibPath, oldKey: 'nosuchkey', newKey: 'anything' });
+    assert.ok(data.error);
+  });
+
+  it('returns an error when the new key already exists', async () => {
+    const data = await callTool('rename_key', { file: bibPath, oldKey: 'smith2023', newKey: 'conf2022bad' });
+    assert.ok(data.error);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validate_entry
 // ---------------------------------------------------------------------------
 
@@ -359,6 +449,38 @@ describe('validate_file', () => {
     const badEntry = data.results.find(r => r.key === 'conf2022bad');
     assert.ok(badEntry, 'conf2022bad should appear in results');
     assert.ok(badEntry.issues.some(i => i.severity === 'error'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validate_patent – error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('validate_patent – error paths', () => {
+  it('returns an error when the entry key does not exist', async () => {
+    const data = await callTool('validate_patent', { file: bibPath, key: 'nosuchkey' });
+    assert.ok(data.error);
+    assert.match(data.error, /not found/i);
+  });
+
+  it('returns an error when the entry has no number field', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'patno_number', type: 'patent',
+      fields: { author: 'Smith, J.', title: 'Widget', year: '2023' },
+    });
+    const data = await callTool('validate_patent', { file: bibPath, key: 'patno_number' });
+    assert.ok(data.error);
+    assert.match(data.error, /number/i);
+  });
+
+  it('returns an error for a non-US patent number', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'pat_ep', type: 'patent',
+      fields: { author: 'Smith, J.', title: 'Widget', year: '2023', number: 'EP1234567A1' },
+    });
+    const data = await callTool('validate_patent', { file: bibPath, key: 'pat_ep' });
+    assert.ok(data.error);
+    assert.match(data.error, /US patents/i);
   });
 });
 
@@ -510,5 +632,447 @@ describe('list_entry_types', () => {
   it('returns error for unknown type', async () => {
     const data = await callTool('list_entry_types', { type: 'badtype' });
     assert.ok(data.error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query_entries – missingField filter
+// ---------------------------------------------------------------------------
+
+describe('query_entries – missingField', () => {
+  it('returns only entries missing the specified field', async () => {
+    // jones2020 has a doi from earlier update_field test; smith2023 may not
+    // Use a fresh temp file to control the state precisely
+    const tmp = join(tmpdir(), `mcp-missing-${Date.now()}.bib`);
+    await writeFile(tmp, `@article{hasdoi, author={A}, title={T}, journal={J}, year={2023}, doi={10.1234/x}}
+@article{nodoi, author={B}, title={U}, journal={K}, year={2024}}
+`, 'utf8');
+    try {
+      const data = await callTool('query_entries', { file: tmp, missingField: 'doi' });
+      assert.equal(data.count, 1);
+      assert.equal(data.entries[0].key, 'nodoi');
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('returns empty when all entries have the field', async () => {
+    const tmp = join(tmpdir(), `mcp-allhave-${Date.now()}.bib`);
+    await writeFile(tmp, `@misc{a, doi={10.1/a}}
+@misc{b, doi={10.1/b}}
+`, 'utf8');
+    try {
+      const data = await callTool('query_entries', { file: tmp, missingField: 'doi' });
+      assert.equal(data.count, 0);
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// update_fields
+// ---------------------------------------------------------------------------
+
+describe('update_fields', () => {
+  it('updates multiple fields on a single entry', async () => {
+    await callTool('update_fields', {
+      file: bibPath,
+      updates: { smith2023: { year: '2024', volume: '99' } },
+    });
+    const y = await callTool('get_field', { file: bibPath, key: 'smith2023', field: 'year' });
+    const v = await callTool('get_field', { file: bibPath, key: 'smith2023', field: 'volume' });
+    assert.equal(y.value, '2024');
+    assert.equal(v.value, '99');
+  });
+
+  it('updates fields across multiple entries in one call', async () => {
+    await callTool('create_entry', { file: bibPath, key: 'bulk1', type: 'misc', fields: { title: 'A' } });
+    await callTool('create_entry', { file: bibPath, key: 'bulk2', type: 'misc', fields: { title: 'B' } });
+
+    const data = await callTool('update_fields', {
+      file: bibPath,
+      updates: {
+        bulk1: { title: 'Updated A' },
+        bulk2: { title: 'Updated B' },
+      },
+    });
+    assert.equal(data.updated, 2);
+
+    const a = await callTool('get_field', { file: bibPath, key: 'bulk1', field: 'title' });
+    const b = await callTool('get_field', { file: bibPath, key: 'bulk2', field: 'title' });
+    assert.equal(a.value, 'Updated A');
+    assert.equal(b.value, 'Updated B');
+  });
+
+  it('returns an error if any entry key does not exist', async () => {
+    const data = await callTool('update_fields', {
+      file: bibPath,
+      updates: { nosuchkey: { year: '2000' } },
+    });
+    assert.ok(data.error);
+    assert.match(data.error, /not found/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replace_entry
+// ---------------------------------------------------------------------------
+
+describe('replace_entry', () => {
+  it('replaces all fields and type in one call', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'toreplace', type: 'misc',
+      fields: { title: 'Old Title', year: '2020', note: 'Old note' },
+    });
+
+    await callTool('replace_entry', {
+      file: bibPath, key: 'toreplace', type: 'book',
+      fields: { title: 'New Title', author: 'Someone', publisher: 'Press', year: '2025' },
+    });
+
+    const entry = await callTool('get_entry', { file: bibPath, key: 'toreplace' });
+    assert.equal(entry.entry.type, 'book');
+    assert.equal(entry.entry.fields.title, 'New Title');
+    assert.equal(entry.entry.fields.year, '2025');
+    assert.equal(entry.entry.fields.note, undefined, 'old fields should be gone');
+  });
+
+  it('keeps existing type when type is omitted', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'keeptype', type: 'article',
+      fields: { author: 'A', title: 'T', journal: 'J', year: '2023' },
+    });
+    await callTool('replace_entry', {
+      file: bibPath, key: 'keeptype',
+      fields: { author: 'B', title: 'U', journal: 'K', year: '2024' },
+    });
+    const entry = await callTool('get_entry', { file: bibPath, key: 'keeptype' });
+    assert.equal(entry.entry.type, 'article');
+    assert.equal(entry.entry.fields.author, 'B');
+  });
+
+  it('returns an error for a missing entry key', async () => {
+    const data = await callTool('replace_entry', {
+      file: bibPath, key: 'nosuchkey', fields: { title: 'X' },
+    });
+    assert.ok(data.error);
+  });
+
+  it('returns an error for an unknown type', async () => {
+    const data = await callTool('replace_entry', {
+      file: bibPath, key: 'smith2023', type: 'badtype', fields: { title: 'X' },
+    });
+    assert.ok(data.error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lookup_doi_by_metadata — error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('lookup_doi_by_metadata – error path', () => {
+  it('returns an error when neither title nor author is supplied', async () => {
+    const data = await callTool('lookup_doi_by_metadata', {});
+    assert.ok(data.error);
+    assert.match(data.error, /title or author/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fix_from_doi — error paths (no network required)
+// ---------------------------------------------------------------------------
+
+describe('fix_from_doi – error paths', () => {
+  it('returns an error when the entry key does not exist', async () => {
+    const data = await callTool('fix_from_doi', { file: bibPath, key: 'nosuchkey' });
+    assert.ok(data.error);
+    assert.match(data.error, /not found/i);
+  });
+
+  it('returns an error when the entry has no doi field', async () => {
+    await callTool('create_entry', {
+      file: bibPath, key: 'nodoi_fix', type: 'misc', fields: { title: 'No DOI' },
+    });
+    const data = await callTool('fix_from_doi', { file: bibPath, key: 'nodoi_fix' });
+    assert.ok(data.error);
+    assert.match(data.error, /doi/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validate_doi_batch — severity summary fields
+// ---------------------------------------------------------------------------
+
+describe('validate_doi_batch – severity summary', () => {
+  it('summary includes withSubstantive, withCosmeticOnly, and lookupErrors fields', async () => {
+    const tmp = join(tmpdir(), `mcp-batch-sev-${Date.now()}.bib`);
+    await writeFile(tmp, '@misc{a, title = {No DOI}}\n', 'utf8');
+    try {
+      const data = await callTool('validate_doi_batch', { file: tmp });
+      assert.ok('withSubstantive'  in data.summary, 'summary should have withSubstantive');
+      assert.ok('withCosmeticOnly' in data.summary, 'summary should have withCosmeticOnly');
+      assert.ok('lookupErrors'     in data.summary, 'summary should have lookupErrors');
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query_entries – keysOnly (explicit and auto)
+// ---------------------------------------------------------------------------
+
+describe('query_entries – keysOnly explicit', () => {
+  it('keysOnly: true returns entries with key and type but no fields', async () => {
+    const data = await callTool('query_entries', { file: bibPath, keysOnly: true });
+    assert.ok(data.entries.length > 0);
+    for (const e of data.entries) {
+      assert.ok('key'  in e, 'entry should have key');
+      assert.ok('type' in e, 'entry should have type');
+      assert.ok(!('fields' in e), 'entry should not have fields when keysOnly: true');
+    }
+    assert.equal(data.keysOnly, true);
+  });
+
+  it('keysOnly: false returns full fields regardless of result count', async () => {
+    const data = await callTool('query_entries', { file: bibPath, keysOnly: false });
+    assert.ok(data.entries.length > 0);
+    for (const e of data.entries) {
+      assert.ok('fields' in e, 'entry should have fields when keysOnly: false');
+    }
+    assert.equal(data.keysOnly, false);
+  });
+});
+
+describe('query_entries – keysOnly auto-mode', () => {
+  // Build a temp bib with more than 20 entries to trigger auto keys-only
+  let largeBibPath;
+
+  before(async () => {
+    largeBibPath = join(tmpdir(), `mcp-large-${Date.now()}.bib`);
+    const entries = Array.from({ length: 25 }, (_, i) =>
+      `@misc{entry${i}, title = {Entry ${i}}, year = {2020}}`
+    ).join('\n\n');
+    await writeFile(largeBibPath, entries, 'utf8');
+  });
+
+  after(async () => {
+    await unlink(largeBibPath).catch(() => {});
+  });
+
+  it('auto-switches to keys-only and includes a note when results exceed threshold', async () => {
+    const data = await callTool('query_entries', { file: largeBibPath });
+    assert.equal(data.total, 25);
+    assert.equal(data.keysOnly, true);
+    assert.ok(data.note, 'should include a note explaining the auto-switch');
+    assert.match(data.note, /keys only/i);
+    for (const e of data.entries) {
+      assert.ok(!('fields' in e), 'entries should not have fields in auto keys-only mode');
+    }
+  });
+
+  it('auto-mode returns full fields when results are at or below the threshold', async () => {
+    // Query with limit: 5 so the page is small enough for auto full-fields
+    const data = await callTool('query_entries', { file: largeBibPath, limit: 5 });
+    assert.equal(data.count, 5);
+    assert.equal(data.keysOnly, false);
+    assert.ok(!data.note, 'should not include a note for small result sets');
+    for (const e of data.entries) {
+      assert.ok('fields' in e, 'entries should have fields for small result sets');
+    }
+  });
+
+  it('keysOnly: false overrides auto-mode even for large result sets', async () => {
+    const data = await callTool('query_entries', { file: largeBibPath, keysOnly: false });
+    assert.equal(data.keysOnly, false);
+    assert.ok(!data.note, 'no auto-switch note when caller forced full fields');
+    for (const e of data.entries) {
+      assert.ok('fields' in e, 'full fields should be present when keysOnly: false');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// query_entries – limit and offset
+// ---------------------------------------------------------------------------
+
+describe('query_entries – limit and offset', () => {
+  let pageBibPath;
+
+  before(async () => {
+    pageBibPath = join(tmpdir(), `mcp-page-${Date.now()}.bib`);
+    // 10 articles with predictable keys: page0 … page9
+    const entries = Array.from({ length: 10 }, (_, i) =>
+      `@article{page${i}, author={Author}, title={Paper ${i}}, journal={J}, year={202${i % 10}}}`
+    ).join('\n\n');
+    await writeFile(pageBibPath, entries, 'utf8');
+  });
+
+  after(async () => {
+    await unlink(pageBibPath).catch(() => {});
+  });
+
+  it('limit restricts the number of returned entries', async () => {
+    const data = await callTool('query_entries', { file: pageBibPath, limit: 3, keysOnly: true });
+    assert.equal(data.count, 3);
+    assert.equal(data.total, 10);
+  });
+
+  it('offset skips the first N entries', async () => {
+    const all  = await callTool('query_entries', { file: pageBibPath, keysOnly: true });
+    const rest = await callTool('query_entries', { file: pageBibPath, offset: 2, keysOnly: true });
+    assert.equal(rest.total, 10);
+    assert.equal(rest.count, 8);
+    assert.equal(rest.entries[0].key, all.entries[2].key);
+  });
+
+  it('limit and offset together implement paging', async () => {
+    const page1 = await callTool('query_entries', { file: pageBibPath, limit: 4, offset: 0, keysOnly: true });
+    const page2 = await callTool('query_entries', { file: pageBibPath, limit: 4, offset: 4, keysOnly: true });
+    const page3 = await callTool('query_entries', { file: pageBibPath, limit: 4, offset: 8, keysOnly: true });
+
+    assert.equal(page1.count, 4);
+    assert.equal(page2.count, 4);
+    assert.equal(page3.count, 2); // only 2 remain
+
+    // No key appears twice across pages
+    const allKeys = [...page1.entries, ...page2.entries, ...page3.entries].map(e => e.key);
+    assert.equal(new Set(allKeys).size, 10);
+  });
+
+  it('total always reflects the full unsliced count', async () => {
+    const data = await callTool('query_entries', { file: pageBibPath, limit: 1, offset: 5, keysOnly: true });
+    assert.equal(data.total, 10);
+    assert.equal(data.count, 1);
+    assert.equal(data.offset, 5);
+  });
+
+  it('offset beyond the result set returns empty entries', async () => {
+    const data = await callTool('query_entries', { file: pageBibPath, offset: 100, keysOnly: true });
+    assert.equal(data.total, 10);
+    assert.equal(data.count, 0);
+    assert.deepEqual(data.entries, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fill_missing_dois
+// ---------------------------------------------------------------------------
+
+describe('fill_missing_dois – listed in tools', () => {
+  it('fill_missing_dois is listed as an available tool', async () => {
+    const result = await client.listTools();
+    const names = result.tools.map(t => t.name);
+    assert.ok(names.includes('fill_missing_dois'), 'fill_missing_dois should be listed');
+  });
+});
+
+describe('fill_missing_dois – offline behaviour', () => {
+  let fillBibPath;
+
+  before(async () => {
+    fillBibPath = join(tmpdir(), `mcp-fill-${Date.now()}.bib`);
+    await writeFile(fillBibPath, `\
+@article{hasdoi2023,
+  author = {Smith, A.},
+  title = {Already Has DOI},
+  journal = {J},
+  year = {2023},
+  doi = {10.1234/existing}
+}
+
+@misc{notitlenoauthor,
+  year = {2020}
+}
+`, 'utf8');
+  });
+
+  after(async () => {
+    await unlink(fillBibPath).catch(() => {});
+  });
+
+  it('returns correct top-level summary fields', async () => {
+    const data = await callTool('fill_missing_dois', { file: fillBibPath, dryRun: true });
+    assert.ok('totalMissingDoi' in data, 'should report totalMissingDoi');
+    assert.ok('processed'       in data, 'should report processed');
+    assert.ok('filled'          in data, 'should report filled');
+    assert.ok('unmatched'       in data, 'should report unmatched');
+    assert.ok('errors'          in data, 'should report errors');
+    assert.ok('dryRun'          in data, 'should report dryRun flag');
+    assert.ok('details'         in data, 'should report details');
+  });
+
+  it('excludes entries that already have a doi', async () => {
+    const data = await callTool('fill_missing_dois', { file: fillBibPath, dryRun: true });
+    // hasdoi2023 has a doi — only notitlenoauthor should be considered
+    assert.equal(data.totalMissingDoi, 1);
+  });
+
+  it('reports entries with no title or author as unmatched', async () => {
+    const data = await callTool('fill_missing_dois', { file: fillBibPath, dryRun: true });
+    const u = data.details.unmatched.find(e => e.key === 'notitlenoauthor');
+    assert.ok(u, 'notitlenoauthor should appear in unmatched');
+    assert.match(u.reason, /title or author/i);
+  });
+
+  it('dryRun: true does not write doi to file', async () => {
+    const tmp = join(tmpdir(), `mcp-dryrun-${Date.now()}.bib`);
+    // An entry Crossref would likely find — but we use a very low threshold
+    // so it might be filled. We verify dryRun prevents the write regardless.
+    await writeFile(tmp, `\
+@misc{nodoi_dry,
+  title = {Unique Unlikely Paper Title XYZ123},
+  year = {2020}
+}
+`, 'utf8');
+    try {
+      const before = await readFile(tmp, 'utf8');
+      await callTool('fill_missing_dois', { file: tmp, dryRun: true, threshold: 0 });
+      const after = await readFile(tmp, 'utf8');
+      assert.equal(before, after, 'file should be unchanged after dryRun');
+      assert.ok(!after.includes('doi = {'), 'no doi field should be written on dryRun');
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('type filter restricts which entries are considered', async () => {
+    const tmp = join(tmpdir(), `mcp-typefilter-${Date.now()}.bib`);
+    await writeFile(tmp, `\
+@article{art1, author={A}, title={Paper}, journal={J}, year={2020}}
+@inproceedings{conf1, author={B}, title={Talk}, booktitle={Conf}, year={2021}}
+`, 'utf8');
+    try {
+      const data = await callTool('fill_missing_dois', {
+        file: tmp, type: 'article', dryRun: true,
+      });
+      assert.equal(data.totalMissingDoi, 1);
+      const keys = [
+        ...data.details.filled,
+        ...data.details.unmatched,
+        ...data.details.errors,
+      ].map(e => e.key);
+      assert.ok(!keys.includes('conf1'), 'conf1 should not be processed when type=article');
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  });
+
+  it('limit and offset restrict which entries are processed', async () => {
+    const tmp = join(tmpdir(), `mcp-fillpage-${Date.now()}.bib`);
+    // 4 entries, all missing doi, all without title/author so they go to unmatched quickly
+    const content = [0, 1, 2, 3].map(i => `@misc{fillkey${i}, year={202${i}}}`).join('\n');
+    await writeFile(tmp, content, 'utf8');
+    try {
+      const data = await callTool('fill_missing_dois', {
+        file: tmp, dryRun: true, limit: 2, offset: 1,
+      });
+      assert.equal(data.totalMissingDoi, 4);
+      assert.equal(data.processed, 2);
+      assert.equal(data.offset, 1);
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
   });
 });

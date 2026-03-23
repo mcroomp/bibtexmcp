@@ -267,6 +267,107 @@ describe('getEntryTypeSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
+// patent entry type
+// ---------------------------------------------------------------------------
+
+describe('validateEntry – @patent', () => {
+  it('accepts a complete patent entry', () => {
+    const e = makeEntry('patent', 'smith2023pat', {
+      author: 'Smith, John',
+      title:  'A Better Widget',
+      number: 'US 11,000,001 B2',
+      year:   '2023',
+    });
+    assert.equal(validateEntry(e).filter(i => i.severity === 'error').length, 0);
+  });
+
+  it('reports error for missing number', () => {
+    const e = makeEntry('patent', 'x', {
+      author: 'Smith, John',
+      title:  'Widget',
+      year:   '2023',
+    });
+    assert.ok(validateEntry(e).some(i => i.severity === 'error' && i.field === 'number'));
+  });
+
+  it('reports error for missing author', () => {
+    const e = makeEntry('patent', 'x', {
+      title:  'Widget',
+      number: 'US 11,000,001 B2',
+      year:   '2023',
+    });
+    assert.ok(validateEntry(e).some(i => i.severity === 'error' && i.field === 'author'));
+  });
+
+  it('reports error for missing title', () => {
+    const e = makeEntry('patent', 'x', {
+      author: 'Smith, John',
+      number: 'US 11,000,001 B2',
+      year:   '2023',
+    });
+    assert.ok(validateEntry(e).some(i => i.severity === 'error' && i.field === 'title'));
+  });
+
+  it('reports error for missing year', () => {
+    const e = makeEntry('patent', 'x', {
+      author: 'Smith, John',
+      title:  'Widget',
+      number: 'US 11,000,001 B2',
+    });
+    assert.ok(validateEntry(e).some(i => i.severity === 'error' && i.field === 'year'));
+  });
+
+  it('accepts optional holder, type, nationality, address, day fields without warnings', () => {
+    const e = makeEntry('patent', 'x', {
+      author:      'Smith, John',
+      title:       'Widget',
+      number:      'US 11,000,001 B2',
+      year:        '2023',
+      holder:      'Acme Corp',
+      type:        'Patent',
+      nationality: 'US',
+      address:     'New York, NY',
+      day:         '15',
+    });
+    const notStandard = validateEntry(e).filter(i => i.message.includes('not standard'));
+    assert.equal(notStandard.length, 0);
+  });
+
+  it('validates doi format on a patent entry', () => {
+    const e = makeEntry('patent', 'x', {
+      author: 'Smith, John',
+      title:  'Widget',
+      number: 'US 11,000,001 B2',
+      year:   '2023',
+      doi:    'not-a-doi',
+    });
+    assert.ok(validateEntry(e).some(i => i.severity === 'warning' && i.field === 'doi'));
+  });
+
+  it('accepts a valid doi on a patent entry', () => {
+    const e = makeEntry('patent', 'x', {
+      author: 'Smith, John',
+      title:  'Widget',
+      number: 'US 11,000,001 B2',
+      year:   '2023',
+      doi:    '10.6084/m9.figshare.1234567',
+    });
+    assert.ok(!validateEntry(e).some(i => i.field === 'doi' && i.severity === 'warning'));
+  });
+
+  it('is returned by listEntryTypes', () => {
+    assert.ok(listEntryTypes().includes('patent'));
+  });
+
+  it('is returned by getEntryTypeSchema', () => {
+    const schema = getEntryTypeSchema('patent');
+    assert.ok(schema);
+    assert.ok(schema.required.includes('number'));
+    assert.ok(schema.optional.includes('holder'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // UNIVERSAL_OPTIONAL fields accepted on all entry types
 // ---------------------------------------------------------------------------
 
