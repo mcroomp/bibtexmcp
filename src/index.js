@@ -104,12 +104,11 @@ BibTeX library, so structural integrity is guaranteed on every write.
 
 Prefer these tools over direct file access for all .bib operations:
 - Read:    query_entries, get_entry, get_field
-- Write:   create_entry, update_field, update_fields, delete_field, delete_entry, replace_entry
-- Check:   validate_entry, validate_file
-- DOI:     validate_doi, validate_doi_batch, lookup_doi_by_metadata, fix_from_doi
+- Write:   create_entry, update_field, update_fields, delete_field, delete_entry, replace_entry, rename_key, create_bib
+- Check:   validate_entry, validate_file, convert_entry_type, list_entry_types
+- DOI:     validate_doi, validate_doi_batch, lookup_doi_by_metadata, fix_from_doi, fill_missing_dois
 - Patent:  validate_patent
-- Discovery: list_entry_types
-- Import:    import_from_orcid`,
+- Import:  import_from_orcid`,
 });
 
 // ---------------------------------------------------------------------------
